@@ -35,15 +35,13 @@ A powerful Telegram bot that helps you upload files or download links directly t
 
 ---
 
-## 📥 Example Bot Output
+## 📥 Environment Variables
 
 ```
-📁 File Name: 23rd_March_Doubt_Session_59.mp4
-🆔 File ID: 163230e0-0906-45b5-b6ff-e140ecd72382
-📂 Folder Code: WWnG8E
-🔑 Guest Token: tKb1w1MlUogN6OWkDUkB0JGEH2oghEpu
-🔗 Download Page: https://gofile.io/d/WWnG8E
-🧾 md5: c8992cc8a5e03c3d79b35cd12a5b5ea6
+API_ID
+API_HASH
+BOT_TOKEN
+
 ```
 
 ---
