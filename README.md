@@ -50,27 +50,35 @@ BOT_TOKEN
 
 If your file was uploaded with a **Guest token** or your account token, you can delete it:
 
-#### Example:
-```python
-import requests
+#### Open : 🔗 [hoppscotch.io](https://hoppscotch.io/) just hit import Curl and click import and hit send button
 
-def delete_uploaded_file():
-    file_id = "163230e0-0906-45b5-b6ff-e140ecd72382"
-    guest_token = "tKb1w1MlUogN6OWkDUkB0JGEH2oghEpu"
+```
+curl -X DELETE "https://api.gofile.io/contents" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer h9g4OIaH0efUIlldHKWmhCZLCDH5s4" \
+  -d '{"contentsId": "57bf8145-effb-4afd-bc89-bf7710c6a1c3"}'
+```
+Same can be used for folder also
+```
+curl -X DELETE "https://api.gofile.io/contents" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer h9g4OIaH0efUIlldWmhCZLCDH5s4" \
+  -d '{"contentsId": "c92d0d02-9f24-4a2e-975a-541570f67d32"}'
+```
 
-    url = "https://api.gofile.io/deleteContent"
-    params = {
-        "contentId": file_id,
-        "token": guest_token
-    }
 
-    response = requests.delete(url, params=params)
-    result = response.json()
+### If you get response like this then you file has been successfully deleted
 
-    if result["status"] == "ok":
-        print("✅ File deleted successfully.")
-    else:
-        print("❌ Failed to delete:", result.get("status"))
+```
+{
+  "status": "ok",
+  "data": {
+    "c92d0d02-9f24-4a2e-975a-541570f67d32": {
+      "status": "ok",
+      "data": {}
+    }
+  }
+}
 ```
 
 ---
