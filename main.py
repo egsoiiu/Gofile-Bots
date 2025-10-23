@@ -269,6 +269,8 @@ FEATURES_KEYBOARD = InlineKeyboardMarkup([
     [InlineKeyboardButton("❌ Close", callback_data="close")]
 ])
 
+# Store response data for callback queries
+user_data = {}
 
 @Bot.on_message(filters.private & filters.command("start"))
 async def start(bot, update):
@@ -280,12 +282,107 @@ async def start(bot, update):
         parse_mode=ParseMode.HTML
     )
 
+async def show_final_output(message, response, filename):
+    """Show the final output with 3-section layout"""
+    
+    # Store response data for this message
+    user_data[message.id] = response
+    
+    # Main Page (Section 1)
+    main_text = f"""
+<b>📁 File Uploaded Successfully!</b>
+
+<b>📄 File Name:</b> <code>{filename}</code>
+
+<b>🔗 File URL:</b> <code>{response['downloadPage']}</code>
+
+<b>📊 File Size:</b> <code>{format_size(response.get('size', 0))}</code>
+
+<i>Use the buttons below to manage your file:</i>
+"""
+    
+    # Main page keyboard
+    main_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 File Details", callback_data=f"details_{message.id}")],
+        [InlineKeyboardButton("🔗 Open Link", url=response['downloadPage'])],
+        [InlineKeyboardButton("📤 Share Link", url=f"https://telegram.me/share/url?url={response['downloadPage']}")]
+    ])
+    
+    await message.edit_text(
+        text=main_text,
+        reply_markup=main_keyboard,
+        disable_web_page_preview=True,
+        parse_mode=ParseMode.HTML
+    )
+
+async def show_file_details(message, response):
+    """Show file details (Section 2)"""
+    details_text = f"""
+<b>📋 File Details</b>
+
+<b>📄 File Name:</b> <code>{response['name']}</code>
+<b>🆔 File ID:</b> <code>{response['id']}</code>
+<b>📁 Folder ID:</b> <code>{response['parentFolderCode']}</code>
+<b>🔑 Guest Token:</b> <code>{response['guestToken']}</code>
+<b>🔒 MD5 Hash:</b> <code>{response['md5']}</code>
+<b>📊 File Size:</b> <code>{format_size(response.get('size', 0))}</code>
+<b>🔗 Download Page:</b> <code>{response['downloadPage']}</code>
+
+<i>Use the buttons below for file management:</i>
+"""
+    
+    details_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑️ Delete Command", callback_data=f"delete_cmd_{message.id}")],
+        [InlineKeyboardButton("⬅️ Back", callback_data=f"back_to_main_{message.id}"),
+         InlineKeyboardButton("🔗 File Link", url=response['downloadPage'])]
+    ])
+    
+    await message.edit_text(
+        text=details_text,
+        reply_markup=details_keyboard,
+        disable_web_page_preview=True,
+        parse_mode=ParseMode.HTML
+    )
+
+async def show_delete_command(message, response):
+    """Show delete command (Section 3)"""
+    delete_text = f"""
+<b>🗑️ Delete File Command</b>
+
+Use this cURL command to delete your file from GoFile:
+
+<code>curl -X DELETE "https://api.gofile.io/contents" \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer {response['guestToken']}" \\
+  -d '{{"contentsId": "{response['id']}"}}'</code>
+
+<b>File Information:</b>
+• <b>File ID:</b> <code>{response['id']}</code>
+• <b>Token:</b> <code>{response['guestToken']}</code>
+• <b>File Name:</b> <code>{response['name']}</code>
+
+<i>Copy and paste this command in your terminal to delete the file.</i>
+"""
+    
+    delete_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 File Details", callback_data=f"details_{message.id}")],
+        [InlineKeyboardButton("⬅️ Back to Main", callback_data=f"back_to_main_{message.id}"),
+         InlineKeyboardButton("🔗 File Link", url=response['downloadPage'])]
+    ])
+    
+    await message.edit_text(
+        text=delete_text,
+        reply_markup=delete_keyboard,
+        disable_web_page_preview=True,
+        parse_mode=ParseMode.HTML
+    )
 
 @Bot.on_callback_query()
 async def handle_callbacks(bot, update):
     callback_data = update.data
     message = update.message
     
+    # Existing menu callbacks
     if callback_data == "help":
         await message.edit_text(
             text=HELP_MESSAGE,
@@ -312,14 +409,39 @@ async def handle_callbacks(bot, update):
     
     elif callback_data == "close":
         await message.delete()
-        # Also try to delete the /start command message if possible
         try:
             await update.message.reply_to_message.delete()
         except:
             pass
     
+    # File details callback
+    elif callback_data.startswith("details_"):
+        message_id = int(callback_data.replace("details_", ""))
+        if message_id in user_data:
+            response = user_data[message_id]
+            await show_file_details(message, response)
+        else:
+            await update.answer("❌ Session expired. Please upload the file again.", show_alert=True)
+    
+    # Delete command callback
+    elif callback_data.startswith("delete_cmd_"):
+        message_id = int(callback_data.replace("delete_cmd_", ""))
+        if message_id in user_data:
+            response = user_data[message_id]
+            await show_delete_command(message, response)
+        else:
+            await update.answer("❌ Session expired. Please upload the file again.", show_alert=True)
+    
+    # Back to main callback
+    elif callback_data.startswith("back_to_main_"):
+        message_id = int(callback_data.replace("back_to_main_", ""))
+        if message_id in user_data:
+            response = user_data[message_id]
+            await show_final_output(message, response, response['name'])
+        else:
+            await update.answer("❌ Session expired. Please upload the file again.", show_alert=True)
+    
     await update.answer()
-
 
 @Bot.on_message(filters.private & filters.command("upload"))
 async def filter(_, update):
@@ -427,42 +549,18 @@ async def filter(_, update):
         response = uploadFile(file_path=media, token=token, folderId=folderId)
         await upload_progress.complete()
 
-      
+        # Clean up downloaded file
         try:
             os.remove(media)
         except:
             pass
 
+        # Create the final output with 3-section layout
+        await show_final_output(message, response, filename)
+
     except Exception as error:
         await message.edit_text(f"Error :- `{error}`")
         return
-
-    text = f"**File Name:** `{response['name']}`" + "\n"
-    text += f"**File ID:** `{response['id']}`" + "\n"
-    text += f"**Parent Folder Code:** `{response['parentFolderCode']}`" + "\n"
-    text += f"**Guest Token:** `{response['guestToken']}`" + "\n"
-    text += f"**md5:** `{response['md5']}`" + "\n"
-    text += f"**Download Page:** `{response['downloadPage']}`"
-    link = response["downloadPage"]
-    reply_markup = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(text="Open Link", url=link),
-                InlineKeyboardButton(
-                    text="Share Link", url=f"https://telegram.me/share/url?url={link}"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    text="Feedback", url="https://telegram.me/FayasNoushad"
-                )
-            ],
-        ]
-    )
-    await message.edit_text(
-        text=text, reply_markup=reply_markup, disable_web_page_preview=True
-    )
-
 
 if __name__ == "__main__":
     print("🤖 Bot is starting with port binding...")
