@@ -1,5 +1,6 @@
 import os
 import requests
+import json
 from dotenv import load_dotenv
 from gofile import uploadFile
 from pyrogram import Client, filters
@@ -17,6 +18,9 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
 load_dotenv()
+
+# Global variables for cancellation
+current_operations = {}
 
 # Create a simple Flask app for health checks and port binding
 app = Flask(__name__)
@@ -86,15 +90,28 @@ def create_progress_bar(percentage, bar_length=10):
     return '▣' * filled + '□' * empty
 
 class DownloadProgress:
-    def __init__(self, message, filename, total_size):
+    def __init__(self, message, filename, total_size, user_id):
         self.message = message
         self.filename = filename
         self.total_size = total_size
         self.start_time = time.time()
         self.downloaded = 0
         self.last_update = 0
+        self.user_id = user_id
+        self.cancelled = False
+        
+        # Store in global operations
+        current_operations[user_id] = {
+            'type': 'download',
+            'cancelled': False,
+            'progress': self
+        }
 
     async def update(self, chunk_size):
+        if current_operations.get(self.user_id, {}).get('cancelled', False):
+            self.cancelled = True
+            raise Exception("Download cancelled by user")
+            
         self.downloaded += chunk_size
         current_time = time.time()
         
@@ -104,6 +121,9 @@ class DownloadProgress:
             await self._update_message()
 
     async def _update_message(self):
+        if self.cancelled:
+            return
+            
         percentage = (self.downloaded / self.total_size) * 100
         progress_bar = create_progress_bar(percentage)
         
@@ -129,11 +149,20 @@ class DownloadProgress:
         text += f"<b>➩ Time Left:</b> <code>{format_time(time_left)}</code>"
 
         try:
-            await self.message.edit_text(text, parse_mode=ParseMode.HTML)
+            await self.message.edit_text(
+                text, 
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{self.user_id}")]
+                ]),
+                parse_mode=ParseMode.HTML
+            )
         except:
             pass
 
     async def complete(self):
+        # Remove from current operations
+        current_operations.pop(self.user_id, None)
+        
         text = f"<b>Download Completed</b> ✓\n\n"
         text += f"ㅤ\n"
         text += f"  <b>File Name:</b> <code>{self.filename}</code>\n\n"
@@ -145,16 +174,37 @@ class DownloadProgress:
         except:
             pass
 
+    async def cancel(self):
+        self.cancelled = True
+        current_operations.pop(self.user_id, None)
+        try:
+            await self.message.edit_text("❌ Download cancelled by user")
+        except:
+            pass
+
 class UploadProgress:
-    def __init__(self, message, filename, total_size):
+    def __init__(self, message, filename, total_size, user_id):
         self.message = message
         self.filename = filename
         self.total_size = total_size
         self.start_time = time.time()
         self.uploaded = 0
         self.last_update = 0
+        self.user_id = user_id
+        self.cancelled = False
+        
+        # Store in global operations
+        current_operations[user_id] = {
+            'type': 'upload',
+            'cancelled': False,
+            'progress': self
+        }
 
     async def update(self, chunk_size):
+        if current_operations.get(self.user_id, {}).get('cancelled', False):
+            self.cancelled = True
+            raise Exception("Upload cancelled by user")
+            
         self.uploaded += chunk_size
         current_time = time.time()
         
@@ -164,6 +214,9 @@ class UploadProgress:
             await self._update_message()
 
     async def _update_message(self):
+        if self.cancelled:
+            return
+            
         percentage = (self.uploaded / self.total_size) * 100
         progress_bar = create_progress_bar(percentage)
         
@@ -183,15 +236,60 @@ class UploadProgress:
         text += f"<b>➩ Time Left:</b> <code>{format_time(time_left)}</code>"
 
         try:
-            await self.message.edit_text(text, parse_mode=ParseMode.HTML)
+            await self.message.edit_text(
+                text, 
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f"cancel_{self.user_id}")]
+                ]),
+                parse_mode=ParseMode.HTML
+            )
         except:
             pass
 
     async def complete(self):
+        # Remove from current operations
+        current_operations.pop(self.user_id, None)
+        
         try:
             await self.message.edit_text("<b>Upload Completed</b> ✓", parse_mode=ParseMode.HTML)
         except:
             pass
+
+    async def cancel(self):
+        self.cancelled = True
+        current_operations.pop(self.user_id, None)
+        try:
+            await self.message.edit_text("❌ Upload cancelled by user")
+        except:
+            pass
+
+# Delete file function using GoFile API
+def delete_file(token: str, content_id: str) -> dict:
+    """Delete file from GoFile using API"""
+    try:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token}"
+        }
+        
+        data = {
+            "contentsId": content_id
+        }
+        
+        response = requests.delete(
+            "https://api.gofile.io/contents",
+            headers=headers,
+            data=json.dumps(data),
+            timeout=10
+        )
+        
+        response.raise_for_status()
+        return response.json()
+        
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Network error: {str(e)}")
+    except Exception as e:
+        raise Exception(f"Delete failed: {str(e)}")
 
 WELCOME_MESSAGE = """
 🤖 <b>Welcome to GoFile Uploader Bot!</b>
@@ -202,6 +300,7 @@ I can help you upload files to gofile.io easily. Just send me a file or a direct
 • Upload files to GoFile
 • Support direct download links
 • Custom folder uploads
+• Delete files from GoFile
 • And much more!
 
 Use the buttons below to explore features or get help.
@@ -225,6 +324,9 @@ HELP_MESSAGE = """
    - <code>/upload https://example.com/file.zip token</code>
    - <code>/upload https://example.com/file.zip token folderid</code>
 
+<b>Delete Files:</b>
+- <code>/delete_file token contentid</code>
+
 <b>Need more help?</b> Feel free to explore the features!
 """
 
@@ -235,6 +337,8 @@ FEATURES_MESSAGE = """
 🔹 <b>Link Support</b>: Upload from direct download links
 🔹 <b>Custom Folders</b>: Specify custom folder IDs
 🔹 <b>Token Support</b>: Use your own GoFile tokens
+🔹 <b>File Management</b>: Delete files from your account
+🔹 <b>Cancellation</b>: Cancel ongoing uploads/downloads
 🔹 <b>Fast Processing</b>: Quick upload and download speeds
 🔹 <b>User-Friendly</b>: Simple commands and intuitive interface
 
@@ -269,8 +373,6 @@ FEATURES_KEYBOARD = InlineKeyboardMarkup([
     [InlineKeyboardButton("❌ Close", callback_data="close")]
 ])
 
-# Store response data for callback queries
-user_data = {}
 
 @Bot.on_message(filters.private & filters.command("start"))
 async def start(bot, update):
@@ -282,107 +384,13 @@ async def start(bot, update):
         parse_mode=ParseMode.HTML
     )
 
-async def show_final_output(message, response, filename):
-    """Show the final output with 3-section layout"""
-    
-    # Store response data for this message
-    user_data[message.id] = response
-    
-    # Main Page (Section 1)
-    main_text = f"""
-<b>📁 File Uploaded Successfully!</b>
-
-<b>📄 File Name:</b> <code>{filename}</code>
-
-<b>🔗 File URL:</b> <code>{response['downloadPage']}</code>
-
-<b>📊 File Size:</b> <code>{format_size(response.get('size', 0))}</code>
-
-<i>Use the buttons below to manage your file:</i>
-"""
-    
-    # Main page keyboard
-    main_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 File Details", callback_data=f"details_{message.id}")],
-        [InlineKeyboardButton("🔗 Open Link", url=response['downloadPage'])],
-        [InlineKeyboardButton("📤 Share Link", url=f"https://telegram.me/share/url?url={response['downloadPage']}")]
-    ])
-    
-    await message.edit_text(
-        text=main_text,
-        reply_markup=main_keyboard,
-        disable_web_page_preview=True,
-        parse_mode=ParseMode.HTML
-    )
-
-async def show_file_details(message, response):
-    """Show file details (Section 2)"""
-    details_text = f"""
-<b>📋 File Details</b>
-
-<b>📄 File Name:</b> <code>{response['name']}</code>
-<b>🆔 File ID:</b> <code>{response['id']}</code>
-<b>📁 Folder ID:</b> <code>{response['parentFolderCode']}</code>
-<b>🔑 Guest Token:</b> <code>{response['guestToken']}</code>
-<b>🔒 MD5 Hash:</b> <code>{response['md5']}</code>
-<b>📊 File Size:</b> <code>{format_size(response.get('size', 0))}</code>
-<b>🔗 Download Page:</b> <code>{response['downloadPage']}</code>
-
-<i>Use the buttons below for file management:</i>
-"""
-    
-    details_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🗑️ Delete Command", callback_data=f"delete_cmd_{message.id}")],
-        [InlineKeyboardButton("⬅️ Back", callback_data=f"back_to_main_{message.id}"),
-         InlineKeyboardButton("🔗 File Link", url=response['downloadPage'])]
-    ])
-    
-    await message.edit_text(
-        text=details_text,
-        reply_markup=details_keyboard,
-        disable_web_page_preview=True,
-        parse_mode=ParseMode.HTML
-    )
-
-async def show_delete_command(message, response):
-    """Show delete command (Section 3)"""
-    delete_text = f"""
-<b>🗑️ Delete File Command</b>
-
-Use this cURL command to delete your file from GoFile:
-
-<code>curl -X DELETE "https://api.gofile.io/contents" \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer {response['guestToken']}" \\
-  -d '{{"contentsId": "{response['id']}"}}'</code>
-
-<b>File Information:</b>
-• <b>File ID:</b> <code>{response['id']}</code>
-• <b>Token:</b> <code>{response['guestToken']}</code>
-• <b>File Name:</b> <code>{response['name']}</code>
-
-<i>Copy and paste this command in your terminal to delete the file.</i>
-"""
-    
-    delete_keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📋 File Details", callback_data=f"details_{message.id}")],
-        [InlineKeyboardButton("⬅️ Back to Main", callback_data=f"back_to_main_{message.id}"),
-         InlineKeyboardButton("🔗 File Link", url=response['downloadPage'])]
-    ])
-    
-    await message.edit_text(
-        text=delete_text,
-        reply_markup=delete_keyboard,
-        disable_web_page_preview=True,
-        parse_mode=ParseMode.HTML
-    )
 
 @Bot.on_callback_query()
 async def handle_callbacks(bot, update):
     callback_data = update.data
     message = update.message
+    user_id = update.from_user.id
     
-    # Existing menu callbacks
     if callback_data == "help":
         await message.edit_text(
             text=HELP_MESSAGE,
@@ -409,42 +417,35 @@ async def handle_callbacks(bot, update):
     
     elif callback_data == "close":
         await message.delete()
+        # Also try to delete the /start command message if possible
         try:
             await update.message.reply_to_message.delete()
         except:
             pass
     
-    # File details callback
-    elif callback_data.startswith("details_"):
-        message_id = int(callback_data.replace("details_", ""))
-        if message_id in user_data:
-            response = user_data[message_id]
-            await show_file_details(message, response)
+    elif callback_data.startswith("cancel_"):
+        target_user_id = int(callback_data.split("_")[1])
+        
+        # Check if the user clicking is the same as the operation owner
+        if user_id == target_user_id:
+            operation = current_operations.get(target_user_id)
+            if operation:
+                operation['cancelled'] = True
+                if 'progress' in operation:
+                    await operation['progress'].cancel()
+                current_operations.pop(target_user_id, None)
+                await update.answer("Operation cancelled!")
+            else:
+                await update.answer("No active operation to cancel!")
         else:
-            await update.answer("❌ Session expired. Please upload the file again.", show_alert=True)
-    
-    # Delete command callback
-    elif callback_data.startswith("delete_cmd_"):
-        message_id = int(callback_data.replace("delete_cmd_", ""))
-        if message_id in user_data:
-            response = user_data[message_id]
-            await show_delete_command(message, response)
-        else:
-            await update.answer("❌ Session expired. Please upload the file again.", show_alert=True)
-    
-    # Back to main callback
-    elif callback_data.startswith("back_to_main_"):
-        message_id = int(callback_data.replace("back_to_main_", ""))
-        if message_id in user_data:
-            response = user_data[message_id]
-            await show_final_output(message, response, response['name'])
-        else:
-            await update.answer("❌ Session expired. Please upload the file again.", show_alert=True)
+            await update.answer("You can only cancel your own operations!")
     
     await update.answer()
 
+
 @Bot.on_message(filters.private & filters.command("upload"))
 async def filter(_, update):
+    user_id = update.from_user.id
     message = await update.reply_text(
         text="<code>Processing...</code>", 
         quote=True, 
@@ -487,7 +488,7 @@ async def filter(_, update):
             total_size = int(response.headers.get('content-length', 0))
             filename = url.split("/")[-1] or "download_file"
             
-            download_progress = DownloadProgress(message, filename, total_size)
+            download_progress = DownloadProgress(message, filename, total_size, user_id)
             
             await message.edit_text("<code>Starting download...</code>", parse_mode=ParseMode.HTML)
             response = requests.get(url, stream=True)
@@ -498,7 +499,16 @@ async def filter(_, update):
                     if chunk:
                         file.write(chunk)
                         await download_progress.update(len(chunk))
+                        if download_progress.cancelled:
+                            break
             
+            if download_progress.cancelled:
+                try:
+                    os.remove(media)
+                except:
+                    pass
+                return
+                
             await download_progress.complete()
         else:
             # For Telegram files
@@ -518,49 +528,149 @@ async def filter(_, update):
                 filename = "file"
                 total_size = 0
             
-            download_progress = DownloadProgress(message, filename, total_size)
+            download_progress = DownloadProgress(message, filename, total_size, user_id)
             
             async def progress_callback(current, total):
                 await download_progress.update(current - download_progress.downloaded)
+                if download_progress.cancelled:
+                    raise Exception("Download cancelled")
             
             media = await update.reply_to_message.download(progress=progress_callback)
+            
+            if download_progress.cancelled:
+                try:
+                    os.remove(media)
+                except:
+                    pass
+                return
+                
             await download_progress.complete()
 
-        # Upload process with dummy progress - START IMMEDIATELY
+        # Upload process with dummy progress
         file_size = os.path.getsize(media)
-        upload_progress = UploadProgress(message, filename, file_size)
+        upload_progress = UploadProgress(message, filename, file_size, user_id)
         
         # Start upload progress immediately
         await upload_progress._update_message()
         
         # Simulate upload progress with 5 MB/s speed
-        steps = 10  # Number of progress updates
+        steps = 10
         chunk_size = file_size // steps
         
         for i in range(steps):
+            if upload_progress.cancelled:
+                break
+                
             if i < steps - 1:
                 await upload_progress.update(chunk_size)
             else:
-                # Last step - complete the upload
                 await upload_progress.update(file_size - upload_progress.uploaded)
-            await asyncio.sleep(0.5)  # Update every 0.5 seconds
+            await asyncio.sleep(0.5)
         
-        # Actual upload (this happens quickly after the progress simulation)
+        if upload_progress.cancelled:
+            try:
+                os.remove(media)
+            except:
+                pass
+            return
+
+        # Actual upload
         response = uploadFile(file_path=media, token=token, folderId=folderId)
         await upload_progress.complete()
 
-        # Clean up downloaded file
         try:
             os.remove(media)
         except:
             pass
 
-        # Create the final output with 3-section layout
-        await show_final_output(message, response, filename)
-
     except Exception as error:
         await message.edit_text(f"Error :- `{error}`")
+        # Clean up on error
+        try:
+            if 'media' in locals():
+                os.remove(media)
+        except:
+            pass
         return
+
+    # Generate direct download link using file ID and filename
+    file_id = response['id']
+    file_name = response['name']
+    
+    # Create direct download URL (this is the pattern you mentioned)
+    direct_download_url = f"https://store-na-phx-4.gofile.io/download/web/{file_id}/{file_name}"
+    
+    text = f"**File Name:** `{response['name']}`" + "\n"
+    text += f"**File ID:** `{response['id']}`" + "\n"
+    text += f"**Parent Folder Code:** `{response['parentFolderCode']}`" + "\n"
+    text += f"**Guest Token:** `{response['guestToken']}`" + "\n"
+    text += f"**md5:** `{response['md5']}`" + "\n"
+    text += f"**Download Page:** `{response['downloadPage']}`"
+    
+    # Single line with all three buttons
+    reply_markup = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(text="🌐 Open Link", url=response['downloadPage']),
+            InlineKeyboardButton(text="📥 Direct Download", url=direct_download_url),
+            InlineKeyboardButton(text="📤 Share", url=f"https://telegram.me/share/url?url={response['downloadPage']}")
+        ]
+    ])
+    
+    await message.edit_text(
+        text=text, 
+        reply_markup=reply_markup, 
+        disable_web_page_preview=True
+    )
+
+
+@Bot.on_message(filters.private & filters.command("delete_file"))
+async def delete_file_handler(_, update):
+    message = await update.reply_text(
+        text="<code>Processing delete request...</code>", 
+        quote=True, 
+        parse_mode=ParseMode.HTML
+    )
+
+    text = update.text.replace("\n", " ")
+    
+    if " " not in text:
+        await message.edit_text(
+            "Error: Please provide token and content ID\n\n"
+            "Usage: <code>/delete_file token contentid</code>\n\n"
+            "Example: <code>/delete_file V98wjfRUHxaUa1VHnOaq6RXx1c7ANEb 139ee906-49b4-43dc-9d0b-5aa778aa4df0</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    try:
+        # Extract token and content ID
+        parts = text.split(" ", 2)[1:]  # Skip command
+        if len(parts) < 2:
+            await message.edit_text("Error: Please provide both token and content ID")
+            return
+            
+        token = parts[0]
+        content_id = parts[1]
+        
+        await message.edit_text("<code>Deleting file from GoFile...</code>", parse_mode=ParseMode.HTML)
+        
+        # Delete the file
+        result = delete_file(token, content_id)
+        
+        if result.get("status") == "ok":
+            await message.edit_text(
+                f"✅ File deleted successfully!\n\n"
+                f"<b>Content ID:</b> <code>{content_id}</code>\n"
+                f"<b>Status:</b> {result.get('status', 'success')}",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            error_msg = result.get("status", "unknown error")
+            await message.edit_text(f"❌ Delete failed: {error_msg}")
+            
+    except Exception as error:
+        await message.edit_text(f"Error: `{error}`")
+
 
 if __name__ == "__main__":
     print("🤖 Bot is starting with port binding...")
